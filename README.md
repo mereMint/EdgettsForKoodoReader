@@ -64,19 +64,6 @@ Free, high-quality neural text-to-speech for your books using Microsoft Edge's T
 3. Select any voice from the dropdown
 4. Your choice is remembered
 
-## Using on Android Phone
-
-Your phone can use the same server running on your PC — both must be on the same WiFi.
-
-1. Start `setup.bat` on your PC
-2. Note the IP address shown: `For your PHONE, use this URL: http://192.168.x.x:8000`
-3. Install **Koodo Reader** on your Android phone
-4. Open the `koodo_plugin\edgeTTS.json` file and **change the `baseUrl`** from `http://127.0.0.1:8000` to `http://YOUR_PC_IP:8000` (the IP shown in step 2)
-5. Add that modified JSON as a plugin in Koodo Reader on your phone
-6. Done! Your phone streams audio from your PC's server
-
-> **Tip:** Your PC's IP might change. If TTS stops working on your phone, check the IP shown in the `setup.bat` window.
-
 ## Moving to Another Computer
 
 This folder is fully portable:
