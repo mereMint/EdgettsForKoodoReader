@@ -221,7 +221,12 @@ public class EdgeTtsService extends TextToSpeechService {
                 + " text=" + text.substring(0, Math.min(50, text.length())) + "...");
 
         // Perform synthesis (this is already on a background thread)
-        byte[] mp3Data = EdgeTtsClient.synthesize(text, voice, rateStr);
+        byte[] mp3Data = null;
+        try {
+            mp3Data = EdgeTtsClient.synthesize(text, voice, rateStr);
+        } catch (Exception e) {
+            Log.e(TAG, "Synthesis failed for text: " + text, e);
+        }
 
         if (stopRequested || mp3Data == null) {
             callback.error();

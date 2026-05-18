@@ -166,22 +166,27 @@ public class SettingsActivity extends AppCompatActivity {
 
         executor.execute(() -> {
             long start = System.currentTimeMillis();
-            byte[] mp3 = EdgeTtsClient.synthesize(testText, selectedVoice, "+0%");
-            long elapsed = System.currentTimeMillis() - start;
+            try {
+                byte[] mp3 = EdgeTtsClient.synthesize(testText, selectedVoice, "+0%");
+                long elapsed = System.currentTimeMillis() - start;
 
-            runOnUiThread(() -> {
-                testButton.setEnabled(true);
-                if (mp3 != null && mp3.length > 0) {
-                    statusText.setText(String.format(Locale.US,
-                            "✓ Success! %d bytes in %.1fs\nVoice: %s",
-                            mp3.length, elapsed / 1000.0, selectedVoice));
-
-                    // Play the audio
-                    playMp3(mp3);
-                } else {
-                    statusText.setText("✗ Synthesis failed. Check internet connection.");
-                }
-            });
+                runOnUiThread(() -> {
+                    testButton.setEnabled(true);
+                    if (mp3 != null && mp3.length > 0) {
+                        statusText.setText(String.format(Locale.US,
+                                "✓ Success! %d bytes in %.1fs\nVoice: %s",
+                                mp3.length, elapsed / 1000.0, selectedVoice));
+                        playMp3(mp3);
+                    } else {
+                        statusText.setText("✗ Synthesis failed: Empty audio received");
+                    }
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    testButton.setEnabled(true);
+                    statusText.setText("✗ Synthesis failed:\n" + e.getMessage());
+                });
+            }
         });
     }
 
