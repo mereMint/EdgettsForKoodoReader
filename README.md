@@ -1,96 +1,102 @@
-# Edge TTS for Koodo Reader
+# Edge TTS — Premium Neural Voices for Koodo Reader & Android
 
-Free, high-quality neural text-to-speech for your books using Microsoft Edge's TTS engine. Sounds natural and human-like with 18+ voice options.
+Free, high-quality text-to-speech using Microsoft Edge's neural voice engine. Two components:
 
-**Completely free** — no API key, no account, no limits.
+1. **Koodo Reader Plugin** — TTS plugin for Koodo Reader (desktop & web)
+2. **Android TTS Engine** — Standalone APK that registers as a system-wide TTS engine on Android
 
-## Quick Start
+---
 
-1. **Double-click `setup.bat`** — installs in seconds, no model downloads
-2. Wait for: `Edge TTS Server ready at http://127.0.0.1:8000`
-3. Install the plugin in Koodo Reader (see below)
-4. Open a book and enjoy!
+## 🖥️ Koodo Reader Plugin (Desktop)
 
-> Keep the `setup.bat` window open while reading. Close it when done.
+### Quick Start
+1. Double-click `setup.bat` — installs dependencies and starts the server
+2. In Koodo Reader → Settings → Plugins → Import `koodo_plugin/edgeTTS.json`
+3. Select an Edge TTS voice and start reading!
 
-## Installing the Plugin
+### How It Works
+- `server.py` — Lightweight API server that streams audio from Edge TTS
+- `koodo_plugin/edgeTTS.js` — Plugin that sends text to the server and pipes audio to file
+- Server streams audio chunks directly — **zero RAM buffering**
 
-1. Open **Koodo Reader → Settings → Plugins**
-2. Click **"Add custom plugin"**
-3. Open `koodo_plugin\edgeTTS.json` in a text editor
-4. **Copy everything** and paste into the plugin text box
-5. Click **Confirm**
+### Using from Android (Koodo Reader on phone)
+1. Run `setup.bat` on your PC (keep it running)
+2. The server shows your PC's local IP (e.g., `http://192.168.1.x:8000`)
+3. In the plugin config, set `baseUrl` to that IP address
 
-## Available Voices
+---
 
-### American English
-| Voice | Gender | Style |
-|---|---|---|
-| Aria | Female | Conversational, warm (default) |
-| Jenny | Female | Friendly, clear |
-| Michelle | Female | Professional, calm |
-| Ana | Female | Young, bright |
-| Guy | Male | Casual, natural |
-| Christopher | Male | Professional, steady |
-| Eric | Male | Warm, deep |
-| Roger | Male | Mature, authoritative |
-| Steffan | Male | Energetic, clear |
+## 📱 Android TTS Engine (Standalone APK)
 
-### British English
-| Voice | Gender | Style |
-|---|---|---|
-| Sonia | Female | Elegant, refined |
-| Libby | Female | Warm, natural |
-| Maisie | Female | Youthful, bright |
-| Ryan | Male | Professional, smooth |
-| Thomas | Male | Clear, articulate |
+The Android app works **completely independently** — no PC or server needed.
+It connects directly to Microsoft's speech synthesis servers from your phone.
 
-### Australian English
-| Voice | Gender | Style |
-|---|---|---|
-| Natasha | Female | Friendly, warm |
-| William | Male | Natural, clear |
+### Building the APK
 
-### German
-| Voice | Gender | Style |
-|---|---|---|
-| Katja | Female | Clear, professional |
-| Conrad | Male | Natural, warm |
+**Prerequisites:** JDK 17+ (the build script will try to install it if missing)
 
-## Changing Voices
+```
+build_apk.bat
+```
 
-1. Open a book in Koodo Reader
-2. Click the 🎧 TTS icon
-3. Select any voice from the dropdown
-4. Your choice is remembered
+This will:
+1. Check for JDK (installs via `winget` if missing)
+2. Accept Android SDK licenses
+3. Download the Android SDK automatically
+4. Build the APK → `EdgeTTS.apk`
 
-## Moving to Another Computer
+### Installing on Android
+1. Transfer `EdgeTTS.apk` to your phone
+2. Install it (enable "Install from unknown sources" if prompted)
+3. Open the app → select a voice → tap **Test Voice**
+4. Go to **Settings → Accessibility → Text-to-speech output**
+5. Select **Edge TTS** as your preferred engine
+6. Any app using Android TTS will now use Edge voices!
 
-This folder is fully portable:
+### Supported Languages
+English (US, British, Australian), German, French, Spanish, Italian,
+Portuguese, Japanese, Korean, Chinese — with multiple voices per language.
 
-1. Copy the entire `tts` folder to your other computer
-2. Make sure Python 3.10+ is installed on that computer
-3. Delete the `venv` folder
-4. Double-click `setup.bat` — it recreates the environment in seconds
-5. Re-add the plugin in Koodo Reader
+---
 
-## Troubleshooting
+## ⚡ Performance Optimisations
 
-**"Connection refused" in Koodo Reader**
-→ Make sure `setup.bat` is running
+### Server (v2)
+- **Streaming response** — audio chunks stream to the client as they arrive from Edge TTS, instead of buffering the entire file in memory
+- Memory stays flat regardless of text length
 
-**No audio plays**
-→ Requires internet connection (Edge TTS streams from Microsoft)
+### Plugin (v2)
+- **Stream-to-file** — server response is piped directly to disk via Node.js streams, never buffered in RAM
+- **Module caching** — `require()` calls moved to top level
+- **Aggressive cleanup** — keeps only 2 recent audio files, deletes older ones per request
+- **Silent MP3 fallback** — empty text and errors return a minimal silent frame, preventing Koodo from freezing
 
-**Want to add more voices?**
-→ Run `venv\Scripts\python.exe -m edge_tts --list-voices` to see all 400+ available voices, then edit `koodo_plugin\edgeTTS.js`
+### Android App
+- **Pre-sized buffers** — audio buffer pre-allocated based on text length estimate
+- **Shared OkHttpClient** — connection pooling reduces GC pressure
+- **Temp file cleanup** — MP3→PCM decoder cleans up immediately after use
+- **Binary frame parsing** — extracts audio data in-place without intermediate copies
 
-## Files
+---
 
-| File | Purpose |
-|---|---|
-| `setup.bat` | One-click setup + start server |
-| `server.py` | Local API server (bridges Koodo to Edge TTS) |
-| `build_plugin.py` | Rebuilds plugin JSON after editing voices |
-| `koodo_plugin/edgeTTS.json` | Plugin to paste into Koodo Reader |
-| `koodo_plugin/edgeTTS.js` | Source code (edit to add voices) |
+## 📁 Project Structure
+
+```
+tts/
+├── setup.bat              # One-click server setup & start
+├── server.py              # Optimised Edge TTS API server
+├── build_plugin.py        # Rebuilds the Koodo plugin JSON
+├── build_apk.bat          # One-click Android APK builder
+├── bootstrap_android.py   # Downloads Gradle wrapper JAR
+├── koodo_plugin/
+│   ├── edgeTTS.js         # Koodo Reader TTS plugin
+│   └── edgeTTS.json       # Built plugin (import this into Koodo)
+└── android/               # Android TTS engine project
+    ├── gradlew.bat         # Gradle wrapper (builds without IDE)
+    ├── app/src/main/java/com/edgetts/engine/
+    │   ├── EdgeTtsClient.java   # WebSocket client (direct to MS servers)
+    │   ├── EdgeTtsService.java  # Android TTS engine service
+    │   ├── Mp3Decoder.java      # MP3→PCM decoder (MediaCodec)
+    │   └── SettingsActivity.java # Voice selection & test UI
+    └── app/src/main/res/        # Layouts, drawables, icons
+```

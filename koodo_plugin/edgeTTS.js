@@ -1,4 +1,10 @@
-// Minimal valid silent MP3 frame (prevents Koodo from freezing on empty text)
+// ── Edge TTS Plugin for Koodo Reader ──────────────────────────────────
+// Optimised for low memory & high performance:
+//   • Streaming HTTP response — no full-body buffering
+//   • Aggressive cleanup: keeps only 2 recent files
+//   • Reuses require() calls (module cache)
+//   • Minimal silent MP3 for empty-text / error fallback
+
 const SILENT_MP3 = Buffer.from(
   "//uQxAAAAAANIAAAAAExBTUUzLjEwMFVVVVVVVVVVVVVVVVVV" +
   "VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV" +
@@ -7,91 +13,85 @@ const SILENT_MP3 = Buffer.from(
   "base64"
 );
 
+// Cache module references once — avoids repeated require() overhead
+const path = require("path");
+const fs = require("fs");
+const axios = require("axios");
+
 const getAudioPath = async (text, speed, dirPath, config) => {
-  const path = require("path");
-  const fs = require("fs");
   const ttsDir = path.join(dirPath, "tts");
 
-  // Ensure tts directory exists
+  // Ensure directory exists (sync is fine — single call, cached by OS)
   if (!fs.existsSync(ttsDir)) {
-    fs.mkdirSync(ttsDir);
-    console.log("folder created successfully");
+    fs.mkdirSync(ttsDir, { recursive: true });
   }
 
-  // --- MEMORY LEAK FIX: clean up old audio files ---
-  // Keep only the most recent few files to avoid unbounded disk growth.
-  // Koodo creates a new file per sentence/paragraph, so over a long reading
-  // session thousands of files accumulate (10GB+).
+  // ── Cleanup old files ──────────────────────────────────────────
+  // Keep only the 2 most recent to avoid disk bloat.
+  // Use a try/catch so cleanup failures never block playback.
   try {
-    const files = fs.readdirSync(ttsDir)
-      .filter((f) => f.endsWith(".mp3"))
-      .map((f) => ({
-        name: f,
-        full: path.join(ttsDir, f),
-        time: parseInt(f.replace(".mp3", ""), 10) || 0,
-      }))
-      .sort((a, b) => b.time - a.time); // newest first
-
-    // Keep the 3 most recent files (safety buffer for playback overlap),
-    // delete everything older.
-    const toDelete = files.slice(3);
-    for (const f of toDelete) {
-      try { fs.unlinkSync(f.full); } catch (_) { /* ignore */ }
+    const files = fs.readdirSync(ttsDir);
+    if (files.length > 2) {
+      const sorted = files
+        .filter((f) => f.endsWith(".mp3"))
+        .map((f) => ({
+          name: f,
+          full: path.join(ttsDir, f),
+          time: parseInt(f, 10) || 0,
+        }))
+        .sort((a, b) => b.time - a.time);
+      for (let i = 2; i < sorted.length; i++) {
+        try { fs.unlinkSync(sorted[i].full); } catch (_) {}
+      }
     }
-  } catch (_) { /* ignore cleanup errors */ }
+  } catch (_) {}
 
-  let audioName = new Date().getTime() + ".mp3";
-  let audioPath = path.join(ttsDir, audioName);
+  const audioPath = path.join(ttsDir, Date.now() + ".mp3");
 
-  // --- CHAPTER-END FIX: handle empty/whitespace text gracefully ---
-  // When Koodo reaches the end of a chapter it sends empty or whitespace-only
-  // text. Without this guard, the request hangs or errors in a loop, causing
-  // the freeze and memory leak.
+  // ── Empty text guard ───────────────────────────────────────────
   if (!text || !text.trim()) {
     fs.writeFileSync(audioPath, SILENT_MP3);
     return audioPath;
   }
 
-  // Generate new audio
-  let audioData = await getTTSAudio(text, speed, config);
-  fs.writeFileSync(audioPath, audioData);
+  // ── Fetch audio via streaming ──────────────────────────────────
+  const baseUrl = config.baseUrl || "http://127.0.0.1:8000";
+  const voiceName = config.voiceName || "en-US-AriaNeural";
+  const speedVal = speed ? Math.min(2.0, Math.max(0.5, speed)) : 1.0;
 
-  // Release the buffer reference immediately so GC can reclaim it
-  audioData = null;
+  try {
+    const response = await axios.post(
+      baseUrl + "/v1/audio/speech",
+      { text, voice: voiceName, speed: speedVal },
+      {
+        headers: { "Content-Type": "application/json" },
+        responseType: "stream",
+        timeout: 30000,
+      }
+    );
 
-  return audioPath;
-};
-const getTTSAudio = async (text, speed, config) => {
-  let baseUrl = config.baseUrl || "http://127.0.0.1:8000";
-  let voiceName = config.voiceName || "en-US-AriaNeural";
-  let speedVal = speed ? Math.min(2.0, Math.max(0.5, speed)) : 1.0;
-  const axios = require("axios");
-  return new Promise((resolve, reject) => {
-    axios
-      .post(
-        baseUrl + "/v1/audio/speech",
-        { text: text, voice: voiceName, speed: speedVal },
-        {
-          headers: { "Content-Type": "application/json" },
-          responseType: "arraybuffer",
-          timeout: 30000, // 30s timeout — prevents hanging forever
-        }
-      )
-      .then((r) => {
-        // Extract only the data buffer; drop the full axios response
-        // (which holds headers, config, request objects) so it can be GC'd
-        const data = r.data;
-        r.data = null;
-        resolve(data);
-      })
-      .catch((e) => {
-        console.log("TTS request failed:", e.message || e);
-        // Return silent MP3 on error instead of rejecting — prevents Koodo
-        // from entering a retry loop that freezes the UI
-        resolve(SILENT_MP3);
+    // Stream response directly to file — never hold full buffer in RAM
+    await new Promise((resolve, reject) => {
+      const writer = fs.createWriteStream(audioPath);
+      response.data.pipe(writer);
+      writer.on("finish", resolve);
+      writer.on("error", reject);
+      // Safety: if the stream stalls, don't hang forever
+      response.data.on("error", (err) => {
+        writer.close();
+        reject(err);
       });
-  });
+    });
+
+    return audioPath;
+  } catch (e) {
+    console.log("TTS request failed:", e.message || e);
+    // Write silent MP3 on error — prevents Koodo retry loop
+    fs.writeFileSync(audioPath, SILENT_MP3);
+    return audioPath;
+  }
 };
+
 const getTTSVoice = async (config) => {
   const voices = [
     { name: "en-US-AriaNeural", gender: "female", label: "Aria (US)" },
@@ -113,16 +113,15 @@ const getTTSVoice = async (config) => {
     { name: "de-DE-KatjaNeural", gender: "female", label: "Katja (Deutsch)" },
     { name: "de-DE-ConradNeural", gender: "male", label: "Conrad (Deutsch)" },
   ];
-  return Promise.resolve(
-    voices.map((v) => ({
-      name: v.name,
-      gender: v.gender,
-      locale: v.name.split("-").slice(0, 2).join("-"),
-      displayName: "Edge TTS - " + v.label,
-      plugin: "edge-tts-local",
-      config: { ...config, voiceName: v.name },
-    }))
-  );
+  return voices.map((v) => ({
+    name: v.name,
+    gender: v.gender,
+    locale: v.name.split("-").slice(0, 2).join("-"),
+    displayName: "Edge TTS - " + v.label,
+    plugin: "edge-tts-local",
+    config: { ...config, voiceName: v.name },
+  }));
 };
+
 global.getAudioPath = getAudioPath;
 global.getTTSVoice = getTTSVoice;

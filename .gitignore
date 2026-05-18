@@ -1,0 +1,39 @@
+# Python & Dependencies
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+
+# Android & Gradle
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/captures/
+*.apk
+*.aab
+*.hprof
+build_tools/
+
+# Generated Artifacts
+EdgeTTS.apk
+
+# IDE & Editor
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Do NOT ignore these required Gradle Wrapper files:
+!android/gradle/wrapper/gradle-wrapper.jar
+!android/gradlew.bat
+!android/gradle/wrapper/gradle-wrapper.properties
