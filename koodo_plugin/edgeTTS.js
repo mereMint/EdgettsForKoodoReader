@@ -1,3 +1,12 @@
+// Minimal valid silent MP3 frame (prevents Koodo from freezing on empty text)
+const SILENT_MP3 = Buffer.from(
+  "//uQxAAAAAANIAAAAAExBTUUzLjEwMFVVVVVVVVVVVVVVVVVV" +
+  "VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV" +
+  "VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV" +
+  "VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV",
+  "base64"
+);
+
 const getAudioPath = async (text, speed, dirPath, config) => {
   const path = require("path");
   const fs = require("fs");
@@ -31,15 +40,26 @@ const getAudioPath = async (text, speed, dirPath, config) => {
     }
   } catch (_) { /* ignore cleanup errors */ }
 
-  // Generate new audio
   let audioName = new Date().getTime() + ".mp3";
+  let audioPath = path.join(ttsDir, audioName);
+
+  // --- CHAPTER-END FIX: handle empty/whitespace text gracefully ---
+  // When Koodo reaches the end of a chapter it sends empty or whitespace-only
+  // text. Without this guard, the request hangs or errors in a loop, causing
+  // the freeze and memory leak.
+  if (!text || !text.trim()) {
+    fs.writeFileSync(audioPath, SILENT_MP3);
+    return audioPath;
+  }
+
+  // Generate new audio
   let audioData = await getTTSAudio(text, speed, config);
-  fs.writeFileSync(path.join(ttsDir, audioName), audioData);
+  fs.writeFileSync(audioPath, audioData);
 
   // Release the buffer reference immediately so GC can reclaim it
   audioData = null;
 
-  return path.join(ttsDir, audioName);
+  return audioPath;
 };
 const getTTSAudio = async (text, speed, config) => {
   let baseUrl = config.baseUrl || "http://127.0.0.1:8000";
@@ -51,7 +71,11 @@ const getTTSAudio = async (text, speed, config) => {
       .post(
         baseUrl + "/v1/audio/speech",
         { text: text, voice: voiceName, speed: speedVal },
-        { headers: { "Content-Type": "application/json" }, responseType: "arraybuffer" }
+        {
+          headers: { "Content-Type": "application/json" },
+          responseType: "arraybuffer",
+          timeout: 30000, // 30s timeout — prevents hanging forever
+        }
       )
       .then((r) => {
         // Extract only the data buffer; drop the full axios response
@@ -60,7 +84,12 @@ const getTTSAudio = async (text, speed, config) => {
         r.data = null;
         resolve(data);
       })
-      .catch((e) => { console.log(e); reject(""); });
+      .catch((e) => {
+        console.log("TTS request failed:", e.message || e);
+        // Return silent MP3 on error instead of rejecting — prevents Koodo
+        // from entering a retry loop that freezes the UI
+        resolve(SILENT_MP3);
+      });
   });
 };
 const getTTSVoice = async (config) => {

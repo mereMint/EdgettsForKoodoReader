@@ -22,14 +22,19 @@ class TTSRequest(BaseModel):
 @app.post("/v1/audio/speech")
 async def generate_speech(request: TTSRequest):
     try:
+        # Guard against empty text (sent by Koodo at chapter end)
+        if not request.text or not request.text.strip():
+            return Response(content=b"", media_type="audio/mpeg")
+
         rate = f"{int((request.speed - 1) * 100):+d}%"
         communicate = edge_tts.Communicate(request.text, request.voice, rate=rate)
         buf = io.BytesIO()
         async for chunk in communicate.stream():
             if chunk["type"] == "audio":
                 buf.write(chunk["data"])
-        buf.seek(0)
-        return Response(content=buf.read(), media_type="audio/mpeg")
+        audio_bytes = buf.getvalue()
+        buf.close()
+        return Response(content=audio_bytes, media_type="audio/mpeg")
     except Exception as e:
         print(f"Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
