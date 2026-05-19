@@ -281,11 +281,27 @@ public class EdgeTtsClient {
                 timeSynchronized = true;
                 Log.d(TAG, "Synchronized clock. Offset: " + serverTimeOffsetSeconds + "s");
             } else {
-                throw new IOException("No Date header received from bing.com");
+                // Proceed without sync — local clock might be close enough
+                Log.w(TAG, "No Date header received; proceeding with local clock");
+                timeSynchronized = true;
+                serverTimeOffsetSeconds = 0;
             }
         } catch (Exception e) {
-            Log.e(TAG, "Failed to synchronize clock", e);
-            throw new IOException("Failed to synchronize clock: " + e.getMessage(), e);
+            Log.e(TAG, "Failed to synchronize clock, proceeding with local time", e);
+            // Don't throw — proceed with local clock time. This prevents
+            // a temporary network blip from killing the entire synthesis.
+            timeSynchronized = true;
+            serverTimeOffsetSeconds = 0;
         }
+    }
+
+    /**
+     * Resets the clock synchronization flag so the next synthesis call
+     * will re-sync with the server. Called by EdgeTtsService on retry
+     * when synthesis fails (the GEC token may have expired).
+     */
+    public static synchronized void resetClockSync() {
+        timeSynchronized = false;
+        Log.d(TAG, "Clock sync reset — will re-sync on next call");
     }
 }

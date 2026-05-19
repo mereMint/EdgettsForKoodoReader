@@ -2,6 +2,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:allowBackup="true"
@@ -27,6 +31,7 @@
         <service
             android:name=".EdgeTtsService"
             android:exported="true"
+            android:foregroundServiceType="mediaPlayback"
             android:label="@string/app_name"
             android:permission="android.permission.BIND_TTS_SERVICE">
             <intent-filter>
@@ -41,3 +46,4 @@
     </application>
 
 </manifest>
+

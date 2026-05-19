@@ -1,3 +1,7 @@
 <resources>
     <string name="app_name">Edge TTS</string>
+    <string name="tts_channel_name">Speech Synthesis</string>
+    <string name="tts_channel_description">Keeps Edge TTS running while reading aloud</string>
+    <string name="tts_notification_title">Edge TTS Active</string>
+    <string name="tts_notification_text">Speech synthesis in progress</string>
 </resources>
