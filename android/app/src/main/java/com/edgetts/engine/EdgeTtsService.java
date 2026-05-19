@@ -13,13 +13,16 @@ import android.speech.tts.SynthesisCallback;
 import android.speech.tts.SynthesisRequest;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.TextToSpeechService;
+import android.speech.tts.Voice;
 import android.util.Log;
 
 import androidx.core.app.NotificationCompat;
 import androidx.preference.PreferenceManager;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -283,6 +286,66 @@ public class EdgeTtsService extends TextToSpeechService {
         return onIsLanguageAvailable(lang, country, variant);
     }
 
+    // ─── Voice API Support ───────────────────────────────────────────
+
+    @Override
+    public List<Voice> onGetVoices() {
+        List<Voice> voices = new ArrayList<>();
+        for (Map.Entry<String, String[]> entry : VOICES.entrySet()) {
+            String localeStr = entry.getKey(); // e.g. "en-US"
+            String[] parts = localeStr.split("-");
+            Locale locale = new Locale(parts[0], parts.length > 1 ? parts[1] : "");
+            
+            for (String voiceName : entry.getValue()) {
+                // Determine features based on our mappings
+                Set<String> features = new HashSet<>();
+                // Do NOT set network connection required to true, otherwise Koodo Reader
+                // will filter these out of the 'Local voices' tab!
+                Voice voice = new Voice(
+                        voiceName,
+                        locale,
+                        Voice.QUALITY_VERY_HIGH,
+                        Voice.LATENCY_NORMAL,
+                        false, // requires network (set to false so Koodo sees it as a local voice)
+                        features
+                );
+                voices.add(voice);
+            }
+        }
+        return voices;
+    }
+
+    @Override
+    public int onLoadVoice(String voiceName) {
+        if (onIsValidVoiceName(voiceName) == TextToSpeech.SUCCESS) {
+            return TextToSpeech.SUCCESS;
+        }
+        return TextToSpeech.ERROR;
+    }
+
+    @Override
+    public int onIsValidVoiceName(String voiceName) {
+        if (voiceName != null && VOICE_GENDERS.containsKey(voiceName)) {
+            return TextToSpeech.SUCCESS;
+        }
+        return TextToSpeech.ERROR;
+    }
+
+    @Override
+    public String onGetDefaultVoiceNameFor(String lang, String country, String variant) {
+        String locale = lang + (country != null && !country.isEmpty() ? "-" + country : "");
+        if (VOICES.containsKey(locale)) {
+            return VOICES.get(locale)[0]; // Return the first voice for this locale
+        }
+        // Try language-only match
+        for (Map.Entry<String, String[]> entry : VOICES.entrySet()) {
+            if (entry.getKey().startsWith(lang + "-")) {
+                return entry.getValue()[0];
+            }
+        }
+        return null; // Fallback to system default
+    }
+
     // ─── Synthesis ───────────────────────────────────────────────────
 
     @Override
@@ -407,7 +470,13 @@ public class EdgeTtsService extends TextToSpeechService {
     private String resolveVoice(SynthesisRequest request) {
         String voice = currentVoice;
 
-        // Check if a specific voice was requested via language params
+        // 1. If a specific voice was requested by name, use it
+        String requestedVoiceName = request.getVoiceName();
+        if (requestedVoiceName != null && VOICE_GENDERS.containsKey(requestedVoiceName)) {
+            return requestedVoiceName;
+        }
+
+        // 2. Fallback: check if a specific language was requested
         String lang = request.getLanguage();
         String country = request.getCountry();
         if (lang != null && !lang.isEmpty()) {
