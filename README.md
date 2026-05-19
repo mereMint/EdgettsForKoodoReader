@@ -46,7 +46,7 @@ This will:
 4. Build the APK → `EdgeTTS.apk`
 
 ### Installing on Android
-1. Transfer `EdgeTTS.apk` to your phone
+1. Download `EdgeTTS.apk` on your phone
 2. Install it (enable "Install from unknown sources" if prompted)
 3. Open the app → select a voice → tap **Test Voice**
 4. Go to **Settings → Accessibility → Text-to-speech output**
@@ -72,6 +72,8 @@ Portuguese, Japanese, Korean, Chinese — with multiple voices per language.
 - **Silent MP3 fallback** — empty text and errors return a minimal silent frame, preventing Koodo from freezing
 
 ### Android App
+- **Background Stability** — Foreground service promotion and CPU wake locks keep the engine alive and reading even when the reader app is closed or backgrounded
+- **Hiccup Recovery** — Network glitches are handled via automatic retries with exponential backoff and resilient clock synchronization
 - **Pre-sized buffers** — audio buffer pre-allocated based on text length estimate
 - **Shared OkHttpClient** — connection pooling reduces GC pressure
 - **Temp file cleanup** — MP3→PCM decoder cleans up immediately after use
