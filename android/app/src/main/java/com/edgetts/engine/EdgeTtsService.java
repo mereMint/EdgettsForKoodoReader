@@ -56,11 +56,12 @@ public class EdgeTtsService extends TextToSpeechService {
     private static final long[] RETRY_DELAYS_MS = {500, 1500, 3000};
 
     // Voice registry: locale → voice names available for that locale
-    private static final Map<String, String[]> VOICES = new HashMap<>();
+    // Package-visible so CheckVoiceDataActivity can enumerate voices
+    static final Map<String, String[]> VOICES = new HashMap<>();
     // Voice name → gender mapping
-    private static final Map<String, String> VOICE_GENDERS = new HashMap<>();
+    static final Map<String, String> VOICE_GENDERS = new HashMap<>();
     // Set of supported locale strings for fast lookup
-    private static final Set<String> SUPPORTED_LOCALES = new HashSet<>();
+    static final Set<String> SUPPORTED_LOCALES = new HashSet<>();
 
     static {
         // English (US)
@@ -155,9 +156,6 @@ public class EdgeTtsService extends TextToSpeechService {
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
         currentVoice = prefs.getString("selected_voice", "en-US-AriaNeural");
 
-        // Create notification channel (required for Android 8.0+)
-        createNotificationChannel();
-
         // Acquire a partial wake lock to prevent CPU sleep during synthesis
         PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "EdgeTTS::SynthesisLock");
@@ -172,113 +170,62 @@ public class EdgeTtsService extends TextToSpeechService {
         if (wakeLock != null && wakeLock.isHeld()) {
             try { wakeLock.release(); } catch (Exception ignored) {}
         }
-        stopForegroundSafely();
         super.onDestroy();
     }
 
-    // ─── Notification / Foreground Service ──────────────────────────
 
-    private void createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationChannel channel = new NotificationChannel(
-                    CHANNEL_ID,
-                    getString(R.string.tts_channel_name),
-                    NotificationManager.IMPORTANCE_LOW // Low = no sound, shows in shade
-            );
-            channel.setDescription(getString(R.string.tts_channel_description));
-            channel.setShowBadge(false);
 
-            NotificationManager nm = getSystemService(NotificationManager.class);
-            if (nm != null) {
-                nm.createNotificationChannel(channel);
-            }
-        }
-    }
 
-    private Notification buildNotification() {
-        // Tapping the notification opens the settings activity
-        Intent intent = new Intent(this, SettingsActivity.class);
-        intent.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
-        PendingIntent pi = PendingIntent.getActivity(this, 0, intent,
-                PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
-
-        return new NotificationCompat.Builder(this, CHANNEL_ID)
-                .setContentTitle(getString(R.string.tts_notification_title))
-                .setContentText(getString(R.string.tts_notification_text))
-                .setSmallIcon(android.R.drawable.ic_btn_speak_now)
-                .setContentIntent(pi)
-                .setOngoing(true)
-                .setSilent(true)
-                .setPriority(NotificationCompat.PRIORITY_LOW)
-                .setCategory(NotificationCompat.CATEGORY_SERVICE)
-                .build();
-    }
-
-    /**
-     * Promote to foreground service so Android won't kill us when
-     * the reader app is closed or backgrounded.
-     */
-    private void startForegroundSafely() {
-        synchronized (foregroundLock) {
-            if (isForeground) return;
-            try {
-                Notification notification = buildNotification();
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                    // Android 14+: must specify foreground service type
-                    startForeground(NOTIFICATION_ID, notification,
-                            android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
-                } else {
-                    startForeground(NOTIFICATION_ID, notification);
-                }
-                isForeground = true;
-                Log.d(TAG, "Promoted to foreground service");
-            } catch (Exception e) {
-                // If foreground fails (e.g., missing permission on some OEMs),
-                // continue anyway — synthesis will still work, just less reliably
-                Log.w(TAG, "Failed to start foreground: " + e.getMessage());
-            }
-        }
-    }
-
-    private void stopForegroundSafely() {
-        synchronized (foregroundLock) {
-            if (!isForeground) return;
-            try {
-                stopForeground(STOP_FOREGROUND_REMOVE);
-                isForeground = false;
-                Log.d(TAG, "Stopped foreground service");
-            } catch (Exception e) {
-                Log.w(TAG, "Failed to stop foreground: " + e.getMessage());
-            }
-        }
-    }
 
     // ─── Language Support ────────────────────────────────────────────
 
     @Override
     protected int onIsLanguageAvailable(String lang, String country, String variant) {
-        String locale = lang + "-" + country;
-        if (SUPPORTED_LOCALES.contains(locale)) {
+        if (lang == null) return TextToSpeech.LANG_NOT_SUPPORTED;
+        
+        // Try direct ISO-2 match first
+        String c = (country == null) ? "" : country;
+        String localeStr = lang + (c.isEmpty() ? "" : "-" + c);
+        if (SUPPORTED_LOCALES.contains(localeStr)) {
             return TextToSpeech.LANG_COUNTRY_AVAILABLE;
         }
-        // Check language-only match
         for (String key : SUPPORTED_LOCALES) {
             if (key.startsWith(lang + "-")) {
                 return TextToSpeech.LANG_AVAILABLE;
             }
         }
-        // Edge TTS supports many more languages — return available for any
-        // and let it gracefully fall back
-        return TextToSpeech.LANG_AVAILABLE;
+        
+        // Try ISO-3 match (Android framework usually passes ISO-3 codes like 'eng', 'deu')
+        for (String supported : SUPPORTED_LOCALES) {
+            String[] parts = supported.split("-");
+            Locale voiceLocale = new Locale(parts[0], parts.length > 1 ? parts[1] : "");
+            try {
+                if (voiceLocale.getISO3Language().equals(lang)) {
+                    if (c.isEmpty() || voiceLocale.getISO3Country().equals(c)) {
+                        return TextToSpeech.LANG_COUNTRY_AVAILABLE;
+                    }
+                    return TextToSpeech.LANG_AVAILABLE;
+                }
+            } catch (Exception ignored) {}
+        }
+
+        return TextToSpeech.LANG_NOT_SUPPORTED; // IMPORTANT: Must not blindly return LANG_AVAILABLE for unknown languages!
     }
 
     @Override
     protected String[] onGetLanguage() {
-        String[] parts = currentVoice.split("-");
-        if (parts.length >= 2) {
-            return new String[]{parts[0], parts[1], ""};
+        String voice = (currentVoice != null) ? currentVoice : "en-US-AriaNeural";
+        String[] parts = voice.split("-");
+        Locale locale = new Locale(parts[0], parts.length > 1 ? parts[1] : "");
+        try {
+            return new String[]{
+                    locale.getISO3Language(),
+                    locale.getISO3Country(),
+                    ""
+            };
+        } catch (Exception e) {
+            return new String[]{"eng", "USA", ""};
         }
-        return new String[]{"en", "US", ""};
     }
 
     @Override
@@ -333,17 +280,45 @@ public class EdgeTtsService extends TextToSpeechService {
 
     @Override
     public String onGetDefaultVoiceNameFor(String lang, String country, String variant) {
-        String locale = lang + (country != null && !country.isEmpty() ? "-" + country : "");
-        if (VOICES.containsKey(locale)) {
-            return VOICES.get(locale)[0]; // Return the first voice for this locale
+        if (lang == null) return currentVoice;
+        
+        // Try direct ISO-2 match
+        String c = (country == null) ? "" : country;
+        String localeStr = lang + (c.isEmpty() ? "" : "-" + c);
+        if (VOICES.containsKey(localeStr)) {
+            return VOICES.get(localeStr)[0];
         }
-        // Try language-only match
         for (Map.Entry<String, String[]> entry : VOICES.entrySet()) {
             if (entry.getKey().startsWith(lang + "-")) {
                 return entry.getValue()[0];
             }
         }
-        return null; // Fallback to system default
+        
+        // Try ISO-3 match (Android framework passes 'eng', 'deu' etc)
+        for (Map.Entry<String, String[]> entry : VOICES.entrySet()) {
+            String[] parts = entry.getKey().split("-");
+            Locale voiceLocale = new Locale(parts[0], parts.length > 1 ? parts[1] : "");
+            try {
+                if (voiceLocale.getISO3Language().equals(lang)) {
+                    if (c.isEmpty() || voiceLocale.getISO3Country().equals(c)) {
+                        return entry.getValue()[0]; // Return matching voice
+                    }
+                }
+            } catch (Exception ignored) {}
+        }
+        
+        // Try ISO-3 language-only match
+        for (Map.Entry<String, String[]> entry : VOICES.entrySet()) {
+            String[] parts = entry.getKey().split("-");
+            Locale voiceLocale = new Locale(parts[0], parts.length > 1 ? parts[1] : "");
+            try {
+                if (voiceLocale.getISO3Language().equals(lang)) {
+                    return entry.getValue()[0];
+                }
+            } catch (Exception ignored) {}
+        }
+        
+        return currentVoice; // Fallback to current configured voice
     }
 
     // ─── Synthesis ───────────────────────────────────────────────────
@@ -358,6 +333,11 @@ public class EdgeTtsService extends TextToSpeechService {
     protected void onSynthesizeText(SynthesisRequest request, SynthesisCallback callback) {
         stopRequested = false;
 
+        // Re-read voice preference in case the user changed it in SettingsActivity
+        // while the service was already running
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
+        currentVoice = prefs.getString("selected_voice", currentVoice);
+
         String text = request.getCharSequenceText() != null
                 ? request.getCharSequenceText().toString()
                 : "";
@@ -368,19 +348,20 @@ public class EdgeTtsService extends TextToSpeechService {
             return;
         }
 
-        // Promote to foreground and acquire wake lock before doing any work
-        startForegroundSafely();
+        // Acquire wake lock before doing any work
         acquireWakeLock();
 
         try {
             synthesizeWithRetry(request, callback, text);
+        } catch (Exception e) {
+            // Catch-all: ensure the callback always gets a response so Android
+            // doesn't hang waiting for audio that will never come.
+            Log.e(TAG, "Unexpected error in onSynthesizeText", e);
+            try {
+                callback.error();
+            } catch (Exception ignored) {}
         } finally {
             releaseWakeLock();
-            // Note: We do NOT stop foreground here. The TTS framework may send
-            // more utterances immediately after this one. Stopping foreground
-            // between utterances would create a window where Android could kill us.
-            // The foreground service will be stopped in onDestroy() when the
-            // framework unbinds from the service.
         }
     }
 
@@ -480,18 +461,41 @@ public class EdgeTtsService extends TextToSpeechService {
         String lang = request.getLanguage();
         String country = request.getCountry();
         if (lang != null && !lang.isEmpty()) {
-            String locale = lang + "-" + country;
-            if (VOICES.containsKey(locale)) {
-                // Use first voice for that locale if current voice doesn't match
-                if (!currentVoice.startsWith(locale)) {
-                    voice = VOICES.get(locale)[0];
+            String c = (country == null) ? "" : country;
+            String localeStr = lang + (c.isEmpty() ? "" : "-" + c);
+            
+            if (VOICES.containsKey(localeStr)) {
+                if (!currentVoice.startsWith(localeStr)) {
+                    voice = VOICES.get(localeStr)[0];
                 }
             } else {
-                // Try language-only match
+                // Try ISO-3 match
+                boolean found = false;
                 for (Map.Entry<String, String[]> entry : VOICES.entrySet()) {
-                    if (entry.getKey().startsWith(lang + "-")) {
-                        voice = entry.getValue()[0];
-                        break;
+                    String[] parts = entry.getKey().split("-");
+                    Locale voiceLocale = new Locale(parts[0], parts.length > 1 ? parts[1] : "");
+                    try {
+                        if (voiceLocale.getISO3Language().equals(lang)) {
+                            if (c.isEmpty() || voiceLocale.getISO3Country().equals(c)) {
+                                voice = entry.getValue()[0];
+                                found = true;
+                                break;
+                            }
+                        }
+                    } catch (Exception ignored) {}
+                }
+                
+                // Try ISO-3 language only match
+                if (!found) {
+                    for (Map.Entry<String, String[]> entry : VOICES.entrySet()) {
+                        String[] parts = entry.getKey().split("-");
+                        Locale voiceLocale = new Locale(parts[0], parts.length > 1 ? parts[1] : "");
+                        try {
+                            if (voiceLocale.getISO3Language().equals(lang)) {
+                                voice = entry.getValue()[0];
+                                break;
+                            }
+                        } catch (Exception ignored) {}
                     }
                 }
             }

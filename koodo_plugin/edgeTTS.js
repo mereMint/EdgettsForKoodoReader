@@ -16,7 +16,8 @@ const SILENT_MP3 = Buffer.from(
 // Cache module references once — avoids repeated require() overhead
 const path = require("path");
 const fs = require("fs");
-const axios = require("axios");
+const http = require("http");
+const url = require("url");
 
 const getAudioPath = async (text, speed, dirPath, config) => {
   const ttsDir = path.join(dirPath, "tts");
@@ -60,27 +61,44 @@ const getAudioPath = async (text, speed, dirPath, config) => {
   const speedVal = speed ? Math.min(2.0, Math.max(0.5, speed)) : 1.0;
 
   try {
-    const response = await axios.post(
-      baseUrl + "/v1/audio/speech",
-      { text, voice: voiceName, speed: speedVal },
-      {
-        headers: { "Content-Type": "application/json" },
-        responseType: "stream",
-        timeout: 30000,
-      }
-    );
+    const body = JSON.stringify({ text, voice: voiceName, speed: speedVal });
+    const parsed = new url.URL(baseUrl + "/v1/audio/speech");
 
-    // Stream response directly to file — never hold full buffer in RAM
     await new Promise((resolve, reject) => {
-      const writer = fs.createWriteStream(audioPath);
-      response.data.pipe(writer);
-      writer.on("finish", resolve);
-      writer.on("error", reject);
-      // Safety: if the stream stalls, don't hang forever
-      response.data.on("error", (err) => {
-        writer.close();
-        reject(err);
+      const req = http.request(
+        {
+          hostname: parsed.hostname,
+          port: parsed.port || 80,
+          path: parsed.pathname,
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Content-Length": Buffer.byteLength(body),
+          },
+          timeout: 30000,
+        },
+        (res) => {
+          if (res.statusCode !== 200) {
+            reject(new Error("HTTP " + res.statusCode));
+            return;
+          }
+          const writer = fs.createWriteStream(audioPath);
+          res.pipe(writer);
+          writer.on("finish", resolve);
+          writer.on("error", reject);
+          res.on("error", (err) => {
+            writer.close();
+            reject(err);
+          });
+        }
+      );
+      req.on("error", reject);
+      req.on("timeout", () => {
+        req.destroy();
+        reject(new Error("Request timed out"));
       });
+      req.write(body);
+      req.end();
     });
 
     return audioPath;

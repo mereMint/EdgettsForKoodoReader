@@ -144,7 +144,7 @@ public class Mp3Decoder {
 
             return new PcmResult(result, sampleRate, channelCount);
 
-        } catch (IOException e) {
+        } catch (Exception e) {
             Log.e(TAG, "Decode failed: " + e.getMessage(), e);
             return null;
         } finally {
