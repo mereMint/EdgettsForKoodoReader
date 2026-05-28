@@ -18,6 +18,88 @@ const path = require("path");
 const fs = require("fs");
 const axios = require("axios");
 
+// ── Monkey-patch Koodo Reader's Howl constructor in Renderer Process ──
+try {
+  const { app, BrowserWindow } = require("electron");
+
+  const injectPatch = (win) => {
+    if (!win || win.isDestroyed()) return;
+    const patchScript = `
+      (function() {
+        if (window.Howl && !window.Howl.isPatched) {
+          const OriginalHowl = window.Howl;
+          window.Howl = function(options) {
+            if (options && options.src && options.src[0] === "skip-empty-page") {
+              const mockHowl = {
+                _onload: options.onload,
+                _onend: null,
+                play: function() {
+                  setTimeout(() => {
+                    if (this._onend) this._onend();
+                  }, 10);
+                },
+                on: function(event, cb) {
+                  if (event === 'end') {
+                    this._onend = cb;
+                  }
+                },
+                stop: function() {},
+                pause: function() {},
+                unload: function() {}
+              };
+              setTimeout(() => {
+                if (options.onload) options.onload();
+              }, 5);
+              return mockHowl;
+            }
+
+            // Track and unload previous instances to prevent memory leak
+            if (window.lastHowlInstance) {
+              try { window.lastHowlInstance.unload(); } catch(e) {}
+            }
+            const inst = new OriginalHowl(options);
+            window.lastHowlInstance = inst;
+            return inst;
+          };
+          window.Howl.isPatched = true;
+          console.log("Koodo Reader Howl player memory leak & skip patch applied successfully!");
+        }
+      })();
+    `;
+    win.webContents.executeJavaScript(patchScript).catch(() => {});
+  };
+
+  // Register for future windows
+  app.on("browser-window-created", (event, window) => {
+    window.webContents.on("did-navigate", () => injectPatch(window));
+    window.webContents.on("dom-ready", () => injectPatch(window));
+  });
+
+  // Inject into any currently open windows
+  BrowserWindow.getAllWindows().forEach(injectPatch);
+} catch (e) {
+  console.log("Failed to register Koodo Reader memory leak & skip patch:", e.message || e);
+}
+
+const isSkipPage = (text) => {
+  if (!text) return true;
+
+  // 1. Remove HTML tags completely
+  let cleanText = text.replace(/<\/?[^>]+(>|$)/g, "");
+
+  // 2. Remove HTML entities: &nbsp; &amp; etc.
+  cleanText = cleanText.replace(/&[a-zA-Z0-9#]+;/g, "");
+
+  // 3. Remove markdown images: ![alt](url)
+  cleanText = cleanText.replace(/!\[.*?\]\(.*?\)/g, "");
+
+  // 4. Remove all characters except Unicode letters and numbers
+  cleanText = cleanText.replace(/[^\p{L}\p{N}]/gu, "");
+
+  // 5. If nothing is left, it's an empty page or a picture-only page
+  return cleanText.length === 0;
+};
+
 const getAudioPath = async (text, speed, dirPath, config) => {
   const ttsDir = path.join(dirPath, "tts");
 
@@ -46,13 +128,12 @@ const getAudioPath = async (text, speed, dirPath, config) => {
     }
   } catch (_) {}
 
-  const audioPath = path.join(ttsDir, Date.now() + ".mp3");
-
-  // ── Empty text guard ───────────────────────────────────────────
-  if (!text || !text.trim()) {
-    fs.writeFileSync(audioPath, SILENT_MP3);
-    return audioPath;
+  // ── Empty / Picture page guard ──────────────────────────────────
+  if (isSkipPage(text)) {
+    return "skip-empty-page";
   }
+
+  const audioPath = path.join(ttsDir, Date.now() + ".mp3");
 
   // ── Fetch audio via streaming ──────────────────────────────────
   const baseUrl = config.baseUrl || "http://127.0.0.1:8000";
