@@ -170,7 +170,7 @@ const getAudioPath = async (text, speed, dirPath, config) => {
       {
         headers: { "Content-Type": "application/json" },
         responseType: "stream",
-        timeout: 30000,
+        timeout: 120000,
       }
     );
 
