@@ -289,6 +289,7 @@ public class EdgeTtsService extends TextToSpeechService {
     protected void onStop() {
         stopRequested = true;
         Log.d(TAG, "Synthesis stop requested");
+        EdgeTtsClient.cancelActiveRequest();
     }
 
     @Override
@@ -436,20 +437,29 @@ public class EdgeTtsService extends TextToSpeechService {
      */
     private void deliverAudio(SynthesisCallback callback, Mp3Decoder.PcmResult pcm) {
         int maxChunk = callback.getMaxBufferSize();
-        callback.start(pcm.sampleRate, AudioFormat.ENCODING_PCM_16BIT, pcm.channelCount);
+        int startResult = callback.start(pcm.sampleRate, AudioFormat.ENCODING_PCM_16BIT, pcm.channelCount);
+        if (startResult != TextToSpeech.SUCCESS) {
+            Log.e(TAG, "callback.start failed");
+            return;
+        }
 
         int offset = 0;
+        boolean errorOccurred = false;
         while (offset < pcm.pcmData.length && !stopRequested) {
             int bytesToWrite = Math.min(maxChunk, pcm.pcmData.length - offset);
             int result = callback.audioAvailable(pcm.pcmData, offset, bytesToWrite);
             if (result != TextToSpeech.SUCCESS) {
                 Log.w(TAG, "audioAvailable returned error at offset " + offset);
+                errorOccurred = true;
                 break;
             }
             offset += bytesToWrite;
         }
 
-        if (!stopRequested) {
+        if (stopRequested || errorOccurred) {
+            Log.d(TAG, "Synthesis stopped or error occurred during audio delivery. Calling callback.error().");
+            callback.error();
+        } else {
             callback.done();
         }
     }

@@ -38,6 +38,26 @@ public class EdgeTtsClient {
     private static long serverTimeOffsetSeconds = 0;
     private static boolean timeSynchronized = false;
 
+    private static java.lang.ref.WeakReference<WebSocket> activeWebSocketRef = null;
+
+    /**
+     * Cancels any active WebSocket connection.
+     */
+    public static synchronized void cancelActiveRequest() {
+        if (activeWebSocketRef != null) {
+            WebSocket ws = activeWebSocketRef.get();
+            if (ws != null) {
+                try {
+                    ws.cancel();
+                    Log.d(TAG, "Active WebSocket request cancelled");
+                } catch (Exception e) {
+                    Log.w(TAG, "Error cancelling active WebSocket: " + e.getMessage());
+                }
+            }
+            activeWebSocketRef = null;
+        }
+    }
+
     // Microsoft's public speech synthesis WebSocket endpoint
     private static final String WSS_URL =
             "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1";
@@ -151,6 +171,7 @@ public class EdgeTtsClient {
                 String err = "WebSocket failure: " + t.getMessage();
                 if (response != null) {
                     err += " (HTTP " + response.code() + " " + response.message() + ")";
+                    try { response.close(); } catch (Exception ignored) {}
                 }
                 Log.e(TAG, err, t);
                 errorRef.set(err);
@@ -165,6 +186,10 @@ public class EdgeTtsClient {
                 latch.countDown();
             }
         });
+
+        synchronized (EdgeTtsClient.class) {
+            activeWebSocketRef = new java.lang.ref.WeakReference<>(ws);
+        }
 
         try {
             // Wait up to 30s for synthesis to complete
@@ -268,23 +293,23 @@ public class EdgeTtsClient {
                     .url("https://bing.com")
                     .head()
                     .build();
-            Response response = HTTP_CLIENT.newCall(request).execute();
-            String dateHeader = response.header("Date");
-            response.close();
-            
-            if (dateHeader != null) {
-                java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss z", Locale.US);
-                sdf.setTimeZone(java.util.TimeZone.getTimeZone("GMT"));
-                java.util.Date serverDate = sdf.parse(dateHeader);
-                long serverTimeMillis = serverDate.getTime();
-                serverTimeOffsetSeconds = (serverTimeMillis - System.currentTimeMillis()) / 1000;
-                timeSynchronized = true;
-                Log.d(TAG, "Synchronized clock. Offset: " + serverTimeOffsetSeconds + "s");
-            } else {
-                // Proceed without sync — local clock might be close enough
-                Log.w(TAG, "No Date header received; proceeding with local clock");
-                timeSynchronized = true;
-                serverTimeOffsetSeconds = 0;
+            try (Response response = HTTP_CLIENT.newCall(request).execute()) {
+                String dateHeader = response.header("Date");
+                
+                if (dateHeader != null) {
+                    java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss z", Locale.US);
+                    sdf.setTimeZone(java.util.TimeZone.getTimeZone("GMT"));
+                    java.util.Date serverDate = sdf.parse(dateHeader);
+                    long serverTimeMillis = serverDate.getTime();
+                    serverTimeOffsetSeconds = (serverTimeMillis - System.currentTimeMillis()) / 1000;
+                    timeSynchronized = true;
+                    Log.d(TAG, "Synchronized clock. Offset: " + serverTimeOffsetSeconds + "s");
+                } else {
+                    // Proceed without sync — local clock might be close enough
+                    Log.w(TAG, "No Date header received; proceeding with local clock");
+                    timeSynchronized = true;
+                    serverTimeOffsetSeconds = 0;
+                }
             }
         } catch (Exception e) {
             Log.e(TAG, "Failed to synchronize clock, proceeding with local time", e);

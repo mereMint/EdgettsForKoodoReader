@@ -1,7 +1,7 @@
 import json, hashlib
 
 with open('koodo_plugin/edgeTTS.js', 'r', encoding='utf-8') as f:
-    script = ' '.join(f.read().split())
+    script = f.read()
 
 plugin = {
     "identifier": "edge-tts-local",
