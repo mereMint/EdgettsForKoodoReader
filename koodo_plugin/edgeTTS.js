@@ -158,7 +158,7 @@ const getAudioPath = async (text, speed, dirPath, config) => {
 
   const audioPath = path.join(ttsDir, Date.now() + ".mp3");
 
-  /* ── Fetch audio via streaming ────────────────────────────────── */
+  /* ── Fetch audio ────────────────────────────────────────────────── */
   const baseUrl = config.baseUrl || "http://127.0.0.1:8000";
   const voiceName = config.voiceName || "en-US-AriaNeural";
   const speedVal = speed ? Math.min(2.0, Math.max(0.5, speed)) : 1.0;
@@ -169,23 +169,30 @@ const getAudioPath = async (text, speed, dirPath, config) => {
       { text, voice: voiceName, speed: speedVal },
       {
         headers: { "Content-Type": "application/json" },
-        responseType: "stream",
+        responseType: "arraybuffer",
         timeout: 120000,
+        /* Accept any 2xx status; axios throws on 4xx/5xx by default */
       }
     );
 
-    /* Stream response directly to file — never hold full buffer in RAM */
-    await new Promise((resolve, reject) => {
-      const writer = fs.createWriteStream(audioPath);
-      response.data.pipe(writer);
-      writer.on("finish", resolve);
-      writer.on("error", reject);
-      /* Safety: if the stream stalls, don't hang forever */
-      response.data.on("error", (err) => {
-        writer.close();
-        reject(err);
-      });
-    });
+    const audioBuffer = Buffer.from(response.data);
+    console.log("TTS response:", audioBuffer.length, "bytes");
+
+    /* Guard: if server returned empty audio, use silent MP3 */
+    if (audioBuffer.length < 100) {
+      console.log("TTS returned too little data, using silent MP3");
+      fs.writeFileSync(audioPath, SILENT_MP3);
+      return audioPath;
+    }
+
+    fs.writeFileSync(audioPath, audioBuffer);
+
+    /* Double-check: verify file was written and has content */
+    const stat = fs.statSync(audioPath);
+    if (stat.size < 100) {
+      console.log("Audio file too small:", stat.size, "bytes — using silent MP3");
+      fs.writeFileSync(audioPath, SILENT_MP3);
+    }
 
     return audioPath;
   } catch (e) {

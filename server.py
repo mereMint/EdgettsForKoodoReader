@@ -136,36 +136,78 @@ async def list_voices():
     return JSONResponse(voices)
 
 
+def clean_text_for_tts(text: str) -> str:
+    """Strip HTML tags, entities, and other markup that would break Edge TTS.
+    Koodo Reader sends raw HTML page content which Edge TTS interprets as
+    broken SSML, causing silent synthesis failures."""
+    # Remove HTML tags
+    clean = re.sub(r'<[^>]+>', ' ', text)
+    # Decode common HTML entities
+    clean = clean.replace('&nbsp;', ' ')
+    clean = clean.replace('&amp;', '&')
+    clean = clean.replace('&lt;', '<')
+    clean = clean.replace('&gt;', '>')
+    clean = clean.replace('&quot;', '"')
+    clean = clean.replace('&#39;', "'")
+    clean = clean.replace('&apos;', "'")
+    # Remove any remaining HTML entities
+    clean = re.sub(r'&[a-zA-Z0-9#]+;', ' ', clean)
+    # Collapse whitespace
+    clean = re.sub(r'\s+', ' ', clean).strip()
+    return clean
+
+
 @app.post("/v1/audio/speech")
 async def generate_speech(request: TTSRequest):
     try:
         # Guard against empty text (sent by Koodo at chapter end)
         if not request.text or not request.text.strip():
+            print("[TTS] Empty text received, returning empty response")
+            return Response(content=b"", media_type="audio/mpeg")
+
+        # Clean HTML from the text before processing
+        cleaned_text = clean_text_for_tts(request.text)
+        print(f"[TTS] Received {len(request.text)} chars, cleaned to {len(cleaned_text)} chars")
+        print(f"[TTS] Preview: {cleaned_text[:120]}...")
+
+        if not cleaned_text:
+            print("[TTS] Text empty after cleaning, returning empty response")
             return Response(content=b"", media_type="audio/mpeg")
 
         rate = f"{int((request.speed - 1) * 100):+d}%"
-        chunks = split_text_into_chunks(request.text)
+        chunks = split_text_into_chunks(cleaned_text)
+        print(f"[TTS] Split into {len(chunks)} chunks (max {MAX_CHUNK_CHARS} chars each)")
 
-        async def audio_stream():
-            """Process each text chunk through Edge TTS and yield audio
-            fragments sequentially — the client receives one seamless stream."""
-            for i, chunk_text in enumerate(chunks):
-                try:
-                    communicate = edge_tts.Communicate(
-                        chunk_text, request.voice, rate=rate
-                    )
-                    async for msg in communicate.stream():
-                        if msg["type"] == "audio":
-                            yield msg["data"]
-                except Exception as chunk_err:
-                    print(f"Chunk {i+1}/{len(chunks)} failed: {chunk_err}")
-                    # Skip failed chunks rather than aborting the whole stream
-                    continue
+        # Buffer audio instead of streaming — this lets us detect failures
+        # before committing to a 200 response with empty body
+        audio_parts: list[bytes] = []
 
-        return StreamingResponse(audio_stream(), media_type="audio/mpeg")
+        for i, chunk_text in enumerate(chunks):
+            try:
+                communicate = edge_tts.Communicate(
+                    chunk_text, request.voice, rate=rate
+                )
+                async for msg in communicate.stream():
+                    if msg["type"] == "audio":
+                        audio_parts.append(msg["data"])
+                print(f"[TTS] Chunk {i+1}/{len(chunks)} OK ({len(chunk_text)} chars)")
+            except Exception as chunk_err:
+                print(f"[TTS] Chunk {i+1}/{len(chunks)} FAILED: {chunk_err}")
+                continue
 
+        audio_data = b"".join(audio_parts)
+        print(f"[TTS] Total audio: {len(audio_data)} bytes")
+
+        if not audio_data:
+            print("[TTS] ERROR: No audio data produced! Returning 500")
+            raise HTTPException(status_code=500, detail="Edge TTS produced no audio")
+
+        return Response(content=audio_data, media_type="audio/mpeg")
+
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"[TTS] Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
