@@ -30,6 +30,33 @@ try {
           if (window.Howl && !window.Howl.isPatched) {
             const OriginalHowl = window.Howl;
             window.Howl = function(options) {
+              /* Intercept skip-empty-page: return a mock Howl that instantly
+                 fires onload/onend so Koodo advances to the next page
+                 without touching the real audio decoder */
+              if (options && options.src && options.src[0] === "skip-empty-page") {
+                const mockHowl = {
+                  _onload: options.onload,
+                  _onend: null,
+                  play: function() {
+                    setTimeout(() => {
+                      if (this._onend) this._onend();
+                    }, 10);
+                  },
+                  on: function(event, cb) {
+                    if (event === 'end') {
+                      this._onend = cb;
+                    }
+                  },
+                  stop: function() {},
+                  pause: function() {},
+                  unload: function() {}
+                };
+                setTimeout(() => {
+                  if (options.onload) options.onload();
+                }, 5);
+                return mockHowl;
+              }
+
               /* Track and unload previous instances to prevent memory leak */
               if (window.lastHowlInstance) {
                 try { window.lastHowlInstance.unload(); } catch(e) {}
@@ -39,7 +66,7 @@ try {
               return inst;
             };
             window.Howl.isPatched = true;
-            console.log("Koodo Reader Howl player memory leak patch applied successfully!");
+            console.log("Koodo Reader Howl player memory leak & skip patch applied successfully!");
           }
         };
 
@@ -126,15 +153,7 @@ const getAudioPath = async (text, speed, dirPath, config) => {
 
   /* ── Empty / Picture page guard ────────────────────────────────── */
   if (isSkipPage(text)) {
-    const silentPath = path.join(ttsDir, "silent.mp3");
-    if (!fs.existsSync(silentPath)) {
-      try {
-        fs.writeFileSync(silentPath, SILENT_MP3);
-      } catch (err) {
-        console.log("Failed to write silent MP3 file:", err);
-      }
-    }
-    return silentPath;
+    return "skip-empty-page";
   }
 
   const audioPath = path.join(ttsDir, Date.now() + ".mp3");
