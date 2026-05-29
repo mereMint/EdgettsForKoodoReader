@@ -132,21 +132,18 @@ const getAudioPath = async (text, speed, dirPath, config) => {
   }
 
   /* ── Cleanup old files ────────────────────────────────────────── */
-  /* Keep only the 2 most recent to avoid disk bloat. */
-  /* Use a try/catch so cleanup failures never block playback. */
+  /* Delete files older than 5 minutes to avoid disk bloat, but keep all
+     recent files — Koodo pre-generates ALL sentence audio for a page
+     before starting playback, so we must not delete files it still needs. */
   try {
     const files = fs.readdirSync(ttsDir);
-    if (files.length > 2) {
-      const sorted = files
-        .filter((f) => f.endsWith(".mp3"))
-        .map((f) => ({
-          name: f,
-          full: path.join(ttsDir, f),
-          time: parseInt(f, 10) || 0,
-        }))
-        .sort((a, b) => b.time - a.time);
-      for (let i = 2; i < sorted.length; i++) {
-        try { fs.unlinkSync(sorted[i].full); } catch (_) {}
+    const now = Date.now();
+    const MAX_AGE_MS = 5 * 60 * 1000; /* 5 minutes */
+    for (const f of files) {
+      if (!f.endsWith(".mp3")) continue;
+      const fileTime = parseInt(f, 10) || 0;
+      if (fileTime && (now - fileTime) > MAX_AGE_MS) {
+        try { fs.unlinkSync(path.join(ttsDir, f)); } catch (_) {}
       }
     }
   } catch (_) {}
