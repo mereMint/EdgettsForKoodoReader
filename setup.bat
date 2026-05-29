@@ -41,6 +41,6 @@ echo  Keep this window open while reading.
 echo  Press Ctrl+C to stop.
 echo.
 
-for /f "tokens=5" %%a in ('netstat -aon ^| findstr :8000 ^| findstr LISTENING') do taskkill /F /PID %%a >nul 2>&1
+powershell -Command "$p = (Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue).OwningProcess; if ($p) { Stop-Process -Id $p -Force -ErrorAction SilentlyContinue }"
 venv\Scripts\python.exe server.py
 pause

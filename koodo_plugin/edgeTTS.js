@@ -153,7 +153,8 @@ const getAudioPath = async (text, speed, dirPath, config) => {
     return "skip-empty-page";
   }
 
-  const audioPath = path.join(ttsDir, Date.now() + ".mp3");
+  const uniqueId = Date.now() + "_" + Math.random().toString(36).slice(2, 8);
+  const audioPath = path.join(ttsDir, uniqueId + ".mp3");
 
   /* ── Fetch audio ────────────────────────────────────────────────── */
   const baseUrl = config.baseUrl || "http://127.0.0.1:8000";
