@@ -2,10 +2,9 @@
 Edge TTS Server — Optimised for streaming and low memory usage.
 
 Changes from v1:
-  - StreamingResponse: audio streams to client as it arrives from Edge TTS
-    instead of buffering the entire file in RAM first
-  - Chunked output: each WebSocket chunk is yielded immediately
-  - No BytesIO accumulation: memory stays flat regardless of text length
+  - Audio chunks are written to temp files instead of being accumulated in RAM
+  - StreamingResponse serves generated files in bounded chunks and deletes temps
+  - Blank/image-only pages return a tiny valid silent audio container immediately
   - GET /health endpoint for connectivity checks
   - GET /voices endpoint to list available voices dynamically
 
@@ -15,6 +14,10 @@ v2 fix:
 """
 
 import re
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
 import edge_tts
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -23,6 +26,12 @@ from pydantic import BaseModel
 from contextlib import asynccontextmanager
 
 MAX_CHUNK_CHARS = 2000  # Safe limit well under Edge TTS WebSocket max
+STREAM_CHUNK_BYTES = 64 * 1024
+SILENT_WAV = b"RIFF$\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80^\x00\x00\x00}\x00\x00\x02\x00\x10\x00data\x00\x00\x00\x00"
+SILENT_MP3 = (
+    b"\xff\xfb\x90\xc4\x00\x00\x00\x00\x00\x00\x00\x00LAME3.100"
+    b"UUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUU"
+)
 
 
 def split_text_into_chunks(text: str, max_chars: int = MAX_CHUNK_CHARS) -> list[str]:
@@ -121,6 +130,7 @@ class TTSRequest(BaseModel):
     text: str
     voice: str = "en-US-AriaNeural"
     speed: float = 1.0
+    format: str = "wav"
 
 
 @app.get("/health")
@@ -140,8 +150,13 @@ def clean_text_for_tts(text: str) -> str:
     """Strip HTML tags, entities, and other markup that would break Edge TTS.
     Koodo Reader sends raw HTML page content which Edge TTS interprets as
     broken SSML, causing silent synthesis failures."""
+    # Drop image-only markdown before stripping punctuation so cover pages do
+    # not synthesize alt text/URLs or send useless requests to Edge TTS.
+    clean = re.sub(r'!\[[^\]]*\]\([^)]*\)', ' ', text)
+    # Drop embedded data URLs/images that can be huge and are never speakable.
+    clean = re.sub(r'data:image/[^\s"\')>]+', ' ', clean, flags=re.IGNORECASE)
     # Remove HTML tags
-    clean = re.sub(r'<[^>]+>', ' ', text)
+    clean = re.sub(r'<[^>]+>', ' ', clean)
     # Decode common HTML entities
     clean = clean.replace('&nbsp;', ' ')
     clean = clean.replace('&amp;', '&')
@@ -157,13 +172,111 @@ def clean_text_for_tts(text: str) -> str:
     return clean
 
 
+def silent_audio_response(output_format: str) -> Response:
+    """Return a valid tiny audio file for blank/image-only pages.
+
+    Returning an actual audio container avoids Koodo/Howler retry loops and
+    keeps empty pages from touching Edge TTS at all.
+    """
+    if output_format == "mp3":
+        return Response(content=SILENT_MP3, media_type="audio/mpeg")
+    return Response(content=SILENT_WAV, media_type="audio/wav")
+
+
+async def stream_file_and_cleanup(path: Path, cleanup_paths: list[Path]):
+    """Yield a file in bounded chunks, then delete all related temp files."""
+    try:
+        with path.open("rb") as handle:
+            while True:
+                chunk = handle.read(STREAM_CHUNK_BYTES)
+                if not chunk:
+                    break
+                yield chunk
+    finally:
+        for cleanup_path in cleanup_paths:
+            try:
+                cleanup_path.unlink(missing_ok=True)
+            except Exception as cleanup_err:
+                print(f"[TTS] Temp cleanup failed for {cleanup_path}: {cleanup_err}")
+
+
+def file_stream_response(path: Path, media_type: str, cleanup_paths: list[Path]) -> StreamingResponse:
+    """Create a StreamingResponse that does not retain the full audio in RAM."""
+    return StreamingResponse(
+        stream_file_and_cleanup(path, cleanup_paths),
+        media_type=media_type,
+    )
+
+
+def mp3_file_to_wav_file(mp3_path: Path) -> Path:
+    """Convert Edge's MP3 output file to a WAV temp file for Koodo on Linux.
+
+    Koodo's Electron/Howler playback is more reliable with WAV on Linux;
+    using temp files keeps memory bounded for long pages.
+    """
+    if not shutil.which("ffmpeg"):
+        raise RuntimeError("ffmpeg is required for WAV output. Install it with: sudo apt install ffmpeg")
+
+    wav_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    wav_path = Path(wav_file.name)
+    wav_file.close()
+    cmd = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+        "-i", str(mp3_path),
+        "-acodec", "pcm_s16le", "-ac", "1", "-ar", "24000",
+        str(wav_path),
+    ]
+    try:
+        subprocess.run(cmd, check=True)
+    except Exception:
+        wav_path.unlink(missing_ok=True)
+        raise
+    return wav_path
+
+
+async def synthesize_mp3_to_tempfile(cleaned_text: str, voice: str, rate: str) -> tuple[Path, int, int]:
+    """Write Edge TTS MP3 chunks to a temp file instead of accumulating RAM."""
+    chunks = split_text_into_chunks(cleaned_text)
+    mp3_file = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
+    mp3_path = Path(mp3_file.name)
+    total_bytes = 0
+
+    try:
+        with mp3_file:
+            for i, chunk_text in enumerate(chunks):
+                try:
+                    communicate = edge_tts.Communicate(
+                        chunk_text, voice, rate=rate
+                    )
+                    async for msg in communicate.stream():
+                        if msg["type"] == "audio":
+                            data = msg["data"]
+                            mp3_file.write(data)
+                            total_bytes += len(data)
+                    print(f"[TTS] Chunk {i+1}/{len(chunks)} OK ({len(chunk_text)} chars)")
+                except Exception as chunk_err:
+                    print(f"[TTS] Chunk {i+1}/{len(chunks)} FAILED: {chunk_err}")
+                    continue
+    except Exception:
+        mp3_path.unlink(missing_ok=True)
+        raise
+
+    if total_bytes == 0:
+        mp3_path.unlink(missing_ok=True)
+    return mp3_path, len(chunks), total_bytes
+
+
 @app.post("/v1/audio/speech")
 async def generate_speech(request: TTSRequest):
     try:
+        output_format = (request.format or "wav").lower()
+        if output_format not in {"wav", "mp3"}:
+            raise HTTPException(status_code=400, detail="format must be 'wav' or 'mp3'")
+
         # Guard against empty text (sent by Koodo at chapter end)
         if not request.text or not request.text.strip():
-            print("[TTS] Empty text received, returning empty response")
-            return Response(content=b"", media_type="audio/mpeg")
+            print("[TTS] Empty text received, returning silent audio")
+            return silent_audio_response(output_format)
 
         # Clean HTML from the text before processing
         cleaned_text = clean_text_for_tts(request.text)
@@ -171,38 +284,30 @@ async def generate_speech(request: TTSRequest):
         print(f"[TTS] Preview: {cleaned_text[:120]}...")
 
         if not cleaned_text:
-            print("[TTS] Text empty after cleaning, returning empty response")
-            return Response(content=b"", media_type="audio/mpeg")
+            print("[TTS] Text empty after cleaning, returning silent audio")
+            return silent_audio_response(output_format)
 
         rate = f"{int((request.speed - 1) * 100):+d}%"
         chunks = split_text_into_chunks(cleaned_text)
         print(f"[TTS] Split into {len(chunks)} chunks (max {MAX_CHUNK_CHARS} chars each)")
 
-        # Buffer audio instead of streaming — this lets us detect failures
-        # before committing to a 200 response with empty body
-        audio_parts: list[bytes] = []
+        mp3_path, _, total_bytes = await synthesize_mp3_to_tempfile(cleaned_text, request.voice, rate)
+        print(f"[TTS] Total MP3 audio: {total_bytes} bytes")
 
-        for i, chunk_text in enumerate(chunks):
-            try:
-                communicate = edge_tts.Communicate(
-                    chunk_text, request.voice, rate=rate
-                )
-                async for msg in communicate.stream():
-                    if msg["type"] == "audio":
-                        audio_parts.append(msg["data"])
-                print(f"[TTS] Chunk {i+1}/{len(chunks)} OK ({len(chunk_text)} chars)")
-            except Exception as chunk_err:
-                print(f"[TTS] Chunk {i+1}/{len(chunks)} FAILED: {chunk_err}")
-                continue
-
-        audio_data = b"".join(audio_parts)
-        print(f"[TTS] Total audio: {len(audio_data)} bytes")
-
-        if not audio_data:
+        if total_bytes == 0:
             print("[TTS] ERROR: No audio data produced! Returning 500")
             raise HTTPException(status_code=500, detail="Edge TTS produced no audio")
 
-        return Response(content=audio_data, media_type="audio/mpeg")
+        if output_format == "mp3":
+            return file_stream_response(mp3_path, "audio/mpeg", [mp3_path])
+
+        try:
+            wav_path = mp3_file_to_wav_file(mp3_path)
+        except Exception:
+            mp3_path.unlink(missing_ok=True)
+            raise
+        print(f"[TTS] Converted to WAV file: {wav_path.stat().st_size} bytes")
+        return file_stream_response(wav_path, "audio/wav", [wav_path, mp3_path])
 
     except HTTPException:
         raise
