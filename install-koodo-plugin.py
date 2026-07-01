@@ -8,7 +8,6 @@ Close Koodo Reader before running this script.
 import json
 import shutil
 import sqlite3
-import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path

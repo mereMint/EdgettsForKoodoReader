@@ -7,6 +7,12 @@ if [ ! -x "$ROOT/venv/bin/python" ]; then
   "$ROOT/setup-linux.sh"
 fi
 
+if ! command -v ffmpeg >/dev/null 2>&1; then
+  echo "ERROR: ffmpeg is required for Koodo WAV playback." >&2
+  echo "Install it with: sudo apt install ffmpeg" >&2
+  exit 1
+fi
+
 systemctl --user enable --now "$SERVICE"
 sleep 1
 

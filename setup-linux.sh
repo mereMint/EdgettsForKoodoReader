@@ -9,6 +9,12 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! command -v ffmpeg >/dev/null 2>&1; then
+  echo "ERROR: ffmpeg is required for Koodo WAV playback." >&2
+  echo "Install it with: sudo apt install ffmpeg" >&2
+  exit 1
+fi
+
 if [ ! -x venv/bin/python ]; then
   echo "[1/3] Creating Python virtual environment..."
   python3 -m venv venv
